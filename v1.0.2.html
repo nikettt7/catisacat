@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>A CAT IS CAT BUT THE DOG IS MOUSE – Level Maker</title>
+<style>
+  body{margin:0;background:#222;color:#eee;font-family:Arial,Helvetica,sans-serif}
+  #header{text-align:center;padding:8px 0;font-weight:700}
+  #container{display:flex;justify-content:center;max-width:960px;margin:auto}
+  #palette{width:160px;background:#333;padding:8px;height:512px;overflow-y:auto}
+  #palette h3{margin:4px 0;text-align:center;font-size:18px}
+  .item{cursor:pointer;background:#666;margin:3px 0;padding:6px;border-radius:4px;text-align:center;user-select:none}
+  .item:hover{background:#888}
+  .sel{background:#aaa!important;color:#000}
+  #uploadLbl{display:block;margin:6px 0;background:#555;padding:6px;border-radius:5px;text-align:center;cursor:pointer}
+  #up{display:none}
+  #canvasWrap{border:2px solid #666}
+  canvas{display:block;background:#444}
+  #banner{position:fixed;top:40%;left:0;width:100%;text-align:center;font-size:48px;color:#0f0;pointer-events:none;opacity:0;transition:opacity .3s}
+</style>
+</head>
+<body>
+<div id="header">
+  A CAT IS CAT BUT THE DOG IS MOUSE – Level Maker<br>
+  <small>Left-click place • Right-click erase • Space play/test • R reset</small>
+</div>
+
+<div id="container">
+  <div id="palette">
+    <h3>Objects</h3><div id="objList"></div>
+    <label id="uploadLbl" for="up">Upload Sprite</label><input id="up" type="file" accept="image/*">
+    <h3>Word Blocks</h3><div id="wordList"></div>
+  </div>
+
+  <div id="canvasWrap"><canvas id="cv" width="640" height="480"></canvas></div>
+</div>
+<div id="banner">YOU WIN!</div>
+
+<script>
+/* === constants & data === */
+const TILE=32, W=20, H=15;
+const objects=['CAT','DOG','MOUSE','WALL','ROCK','TREE','WATER','FIRE','BUSH','FLAG','KEY','DOOR'];
+const words ={NOUN:[...objects],VERB:['IS'],PROP:['YOU','WIN','STOP','PUSH','HOT','MELT']};
+
+/* === DOM refs === */
+const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
+const objBox=document.getElementById('objList'), wordBox=document.getElementById('wordList');
+const banner=document.getElementById('banner');
+
+/* === editor state === */
+const sprites=Object.fromEntries(objects.map(o=>[o,null]));
+const obj   =Array.from({length:H},()=>Array(W).fill(null));
+const text  =Array.from({length:H},()=>Array(W).fill(null));
+let   selName='CAT', selType='obj', play=false;
+let   you=[], win=[], stop=[], push=[];
+
+/* === build palettes === */
+function addItem(name,type,parent){
+  const d=document.createElement('div');
+  d.className='item'; d.textContent=name;
+  d.onclick=()=>{selName=name;selType=type;mark();};
+  parent.appendChild(d);
+}
+objects.forEach(o=>addItem(o,'obj',objBox));
+Object.values(words).flat().forEach(w=>addItem(w,'word',wordBox));
+function mark(){document.querySelectorAll('.item').forEach(i=>i.classList.toggle('sel',i.textContent===selName));}
+mark();
+
+/* === sprite upload === */
+document.getElementById('up').onchange=e=>{
+  const f=e.target.files[0]; if(!f) return;
+  if(selType!=='obj'){alert('Select an object first'); e.target.value=''; return;}
+  const r=new FileReader();
+  r.onload=ev=>{ const img=new Image(); img.onload=()=>{sprites[selName]=img; draw();}; img.src=ev.target.result; };
+  r.readAsDataURL(f); e.target.value='';
+};
+
+/* === placing / erasing === */
+cv.oncontextmenu=e=>e.preventDefault();
+cv.addEventListener('mousedown',e=>{
+  if(play) return;
+  const rect=cv.getBoundingClientRect();
+  const x=Math.floor((e.clientX-rect.left)/TILE);
+  const y=Math.floor((e.clientY-rect.top)/TILE);
+  if(x<0||x>=W||y<0||y>=H) return;
+  if(e.button===2){ obj[y][x]=text[y][x]=null; }
+  else if(selType==='obj') obj[y][x]=selName;
+  else                     text[y][x]=selName;
+  draw();
+});
+
+/* === keyboard === */
+document.addEventListener('keydown',e=>{
+  if(e.code==='Space'){togglePlay(); e.preventDefault();}
+  if(play){
+    const dir={ArrowUp:[0,-1],KeyW:[0,-1],ArrowDown:[0,1],KeyS:[0,1],
+               ArrowLeft:[-1,0],KeyA:[-1,0],ArrowRight:[1,0],KeyD:[1,0]}[e.code];
+    if(dir) move(dir[0],dir[1]);
+    if(e.code==='KeyR') resetPlay();
+  }
+});
+
+function togglePlay(){ play=!play; banner.style.opacity=0; if(play) parseRules(); draw(); }
+function resetPlay(){ togglePlay(); togglePlay(); }
+
+/* === rule parser === */
+function parseRules(){
+  const R={YOU:new Set(),WIN:new Set(),STOP:new Set(),PUSH:new Set()};
+  const add=(n,p)=>R[p]?.add(n);
+  // horizontal
+  for(let y=0;y<H;y++)for(let x=0;x<W-2;x++){
+    const a=text[y][x],b=text[y][x+1],c=text[y][x+2];
+    if(words.NOUN.includes(a)&&b==='IS'&&c) add(a,c);
+  }
+  // vertical
+  for(let x=0;x<W;x++)for(let y=0;y<H-2;y++){
+    const a=text[y][x],b=text[y+1][x],c=text[y+2][x];
+    if(words.NOUN.includes(a)&&b==='IS'&&c) add(a,c);
+  }
+  you=[...R.YOU]; win=[...R.WIN]; stop=[...R.STOP]; push=[...R.PUSH];
+}
+
+/* === player movement === */
+function move(dx,dy){
+  const next=JSON.parse(JSON.stringify(obj)), won=false;
+  for(const who of you){
+    for(let y=0;y<H;y++)for(let x=0;x<W;x++) if(obj[y][x]===who){
+      const nx=x+dx, ny=y+dy; if(nx<0||ny<0||nx>=W||ny>=H) continue;
+      const ahead=obj[ny][nx];
+      if(stop.includes(ahead)) continue;
+      if(push.includes(ahead)){
+        const nnx=nx+dx, nny=ny+dy;
+        if(nnx<0||nny<0||nnx>=W||nny>=H||obj[nny][nnx]) continue;
+        next[nny][nnx]=ahead;
+      }
+      next[ny][nx]=who; next[y][x]=null;
+      if(win.includes(ahead)) banner.style.opacity=1;
+    }
+  }
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++) obj[y][x]=next[y][x];
+  draw();
+}
+
+/* === drawing === */
+function box(col,ch,x,y,pad=0){
+  ctx.fillStyle=col; ctx.fillRect(x*TILE+pad,y*TILE+pad,TILE-2*pad,TILE-2*pad);
+  ctx.fillStyle='#000'; ctx.fillText(ch,x*TILE+10,y*TILE+22);
+}
+function draw(){
+  ctx.clearRect(0,0,cv.width,cv.height);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    const n=obj[y][x];   if(n) (sprites[n]? ctx.drawImage(sprites[n],x*TILE,y*TILE,TILE,TILE): box('#08f',n[0],x,y));
+    const w=text[y][x];  if(w) box('#ff0',w,x,y,4);
+  }
+  ctx.strokeStyle='#666';
+  for(let i=0;i<=W;i++){ctx.beginPath();ctx.moveTo(i*TILE,0);ctx.lineTo(i*TILE,H*TILE);ctx.stroke();}
+  for(let i=0;i<=H;i++){ctx.beginPath();ctx.moveTo(0,i*TILE);ctx.lineTo(W*TILE,i*TILE);ctx.stroke();}
+}
+draw();
+</script>
+</body>
+</html>
