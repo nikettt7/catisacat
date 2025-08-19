@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>A CAT IS CAT BUT THE DOG IS MOUSE – Level Maker</title>
+<style>
+/* ...same CSS as before... */
+</style>
+</head>
+<body>
+<div id="header"><h2>A CAT IS CAT BUT THE DOG IS MOUSE – Level Maker</h2></div>
+
+<div id="container">
+  <div id="palette">
+    <h3>Objects</h3><div id="objList"></div>
+    <label id="uploadLbl" for="up">Upload Sprite</label><input id="up" type="file" accept="image/*">
+    <h3 style="margin-top:10px">Word Blocks</h3><div id="wordList"></div>
+  </div>
+
+  <div id="canvasWrap"><canvas id="cv" width="640" height="480"></canvas></div>
+</div>
+
+<div id="banner">YOU WIN!</div>
+
+<script>
+/* ---------- 1. BUILD PALETTES AS SOON AS DOM IS READY ---------- */
+document.addEventListener('DOMContentLoaded',()=>{ init(); });
+
+function init(){                      // called once, after HTML is parsed
+  /* ===== data ===== */
+  const catalog = ['CAT','DOG','MOUSE','WALL','ROCK','TREE','WATER','FIRE','BUSH','FLAG','KEY','DOOR'];
+  const word    = {NOUN:[...catalog],VERB:['IS'],PROP:['YOU','WIN','STOP','PUSH','HOT','MELT']};
+
+  /* ===== DOM refs ===== */
+  const objBox  = document.getElementById('objList');
+  const wordBox = document.getElementById('wordList');
+  const upBtn   = document.getElementById('up');
+  const cv      = document.getElementById('cv');
+  const ctx     = cv.getContext('2d');
+
+  /* ===== editor state ===== */
+  const TILE=32,W=20,H=15;
+  const sprites = Object.fromEntries(catalog.map(n=>[n,null]));
+  const obj     = Array.from({length:H},()=>Array(W).fill(null));
+  const text    = Array.from({length:H},()=>Array(W).fill(null));
+  let   select  = {name:'CAT', type:'obj'};
+  let   play    = false;
+
+  /* ---------- helper: draw selection bars ---------- */
+  const markSel = () =>{
+    document.querySelectorAll('.item').forEach(d=>d.classList.toggle('sel',d.textContent===select.name));
+  };
+
+  /* ---------- palette builders ---------- */
+  const addItem = (name,type,box)=>{
+    const d = document.createElement('div');
+    d.className='item'; d.textContent=name;
+    d.onclick=()=>{select={name,type};markSel();};
+    box.appendChild(d);
+  };
+  catalog.forEach(n => addItem(n,'obj', objBox));
+  Object.values(word).flat().forEach(w=>addItem(w,'word',wordBox));
+  markSel();                           // highlight CAT on first load
+
+  /* ---------- sprite upload ---------- */
+  upBtn.onchange = e=>{
+    const file = e.target.files[0]; if(!file) return;
+    if(select.type!=='obj'){ alert('Select an object first'); e.target.value=''; return; }
+    const fr = new FileReader();
+    fr.onload = ev=>{
+      const img = new Image();
+      img.onload = ()=>{ sprites[select.name]=img; draw(); };
+      img.src = ev.target.result;
+    };
+    fr.readAsDataURL(file);
+    e.target.value='';
+  };
+
+  /* ---------- canvas interaction ---------- */
+  cv.oncontextmenu = e=>e.preventDefault();  // disable browser menu
+  cv.addEventListener('mousedown',e=>{
+    if(play) return;
+    const r=cv.getBoundingClientRect();
+    const x=Math.floor((e.clientX-r.left)/TILE);
+    const y=Math.floor((e.clientY-r.top)/TILE);
+    if(x<0||x>=W||y<0||y>=H) return;
+    if(e.button===2){ obj[y][x]=null; text[y][x]=null; }
+    else if(select.type==='obj') obj[y][x]=select.name;
+    else                         text[y][x]=select.name;
+    draw();
+  });
+
+  /* ---------- drawing ---------- */
+  function draw(){
+    ctx.clearRect(0,0,cv.width,cv.height);
+    for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+      const n=obj[y][x];
+      if(n){
+        sprites[n] ? ctx.drawImage(sprites[n],x*TILE,y*TILE,TILE,TILE)
+                   : drawBox('#08f',n[0],x,y);
+      }
+      const w=text[y][x];
+      if(w) drawBox('#ff0',w,x,y,4);
+    }
+    ctx.strokeStyle='#666';
+    for(let i=0;i<=W;i++){ctx.beginPath();ctx.moveTo(i*TILE,0);ctx.lineTo(i*TILE,H*TILE);ctx.stroke();}
+    for(let i=0;i<=H;i++){ctx.beginPath();ctx.moveTo(0,i*TILE);ctx.lineTo(W*TILE,i*TILE);ctx.stroke();}
+  }
+  function drawBox(col,char,x,y,pad=0){
+    ctx.fillStyle=col; ctx.fillRect(x*TILE+pad,y*TILE+pad,TILE-2*pad,TILE-2*pad);
+    ctx.fillStyle='#000'; ctx.fillText(char,x*TILE+10,y*TILE+22);
+  }
+  draw();                               // first render
+}
+</script>
+
+</body>
+</html>
