@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>A CAT IS CAT BUT THE DOG IS MOUSE – Level Maker</title>
+<style>
+  body{margin:0;background:#222;color:#eee;font-family:Arial,Helvetica,sans-serif}
+  #header{text-align:center;padding:8px 0;font-weight:700}
+  #container{display:flex;justify-content:center;max-width:960px;margin:auto}
+  #palette{width:160px;background:#333;padding:8px;height:600px;overflow-y:auto}
+  #palette h3{margin:4px 0;text-align:center;font-size:18px}
+  .item{cursor:pointer;background:#666;margin:3px 0;padding:6px;border-radius:4px;text-align:center;user-select:none}
+  .item:hover{background:#888}
+  .sel{background:#aaa!important;color:#000}
+  #uploadLbl{display:block;margin:6px 0;background:#555;padding:6px;border-radius:5px;text-align:center;cursor:pointer}
+  #up{display:none}
+  #canvasWrap{border:2px solid #666}
+  canvas{display:block;background:#444}
+  button{width:100%;margin:6px 0;padding:6px;background:#555;color:#eee;border:none;border-radius:5px;cursor:pointer}
+  button:hover{background:#666}
+  #banner{position:fixed;top:40%;left:0;width:100%;text-align:center;font-size:48px;color:#0f0;pointer-events:none;opacity:0;transition:opacity .3s}
+</style>
+</head>
+<body>
+<div id="header">
+  A CAT IS CAT BUT THE DOG IS MOUSE – Level Maker<br>
+  <small>Click place · Right-click erase · Space play/test · R reset · Z undo</small>
+</div>
+
+<div id="container">
+  <div id="palette">
+    <h3>Objects</h3><div id="objList"></div>
+    <label id="uploadLbl" for="up">Upload Sprite</label><input id="up" type="file" accept="image/*">
+    <button id="btnSave">Save JSON</button>
+    <input  id="btnLoad" type="file" accept=".json">
+    <h3>Word Blocks</h3><div id="wordList"></div>
+  </div>
+
+  <div id="canvasWrap"><canvas id="cv" width="640" height="480"></canvas></div>
+</div>
+<div id="banner">YOU WIN!</div>
+
+<script>
+/* === constants & data === */
+const TILE=32, W=20, H=15;
+const objects=['CAT','DOG','MOUSE','WALL','ROCK','TREE','WATER','FIRE','BUSH','FLAG','KEY','DOOR'];
+const words ={NOUN:[...objects],VERB:['IS'],PROP:['YOU','WIN','STOP','PUSH','HOT','MELT','OPEN','SHUT','DEFEAT','SINK','FLOAT']};
+
+/* === DOM refs === */
+const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
+const objBox=document.getElementById('objList'), wordBox=document.getElementById('wordList');
+const banner=document.getElementById('banner');
+
+/* === editor state === */
+const sprites=Object.fromEntries(objects.map(o=>[o,null]));
+const obj =Array.from({length:H},()=>Array(W).fill(null));
+const txt =Array.from({length:H},()=>Array(W).fill(null));
+let   selName='CAT', selType='obj', play=false;
+let   you=[], win=[], stop=[], push=[];
+
+/* === undo === */
+const undoStack=[];  snapshot();
+function snapshot(){undoStack.push(JSON.stringify({obj,txt})); if(undoStack.length>100)undoStack.shift();}
+
+/* === palette builders === */
+function addItem(name,type,parent){
+  const d=document.createElement('div');
+  d.className='item'; d.textContent=name;
+  d.onclick=()=>{selName=name; selType=type; markSel();};
+  parent.appendChild(d);
+}
+objects.forEach(o=>addItem(o,'obj',objBox));
+Object.values(words).flat().forEach(w=>addItem(w,'word',wordBox));
+function markSel(){document.querySelectorAll('.item').forEach(i=>i.classList.toggle('sel',i.textContent===selName));}
+markSel();
+
+/* === sprite upload === */
+document.getElementById('up').onchange=e=>{
+  const f=e.target.files[0]; if(!f)return;
+  if(selType!=='obj'){alert('Select an object first'); e.target.value=''; return;}
+  const r=new FileReader();
+  r.onload=ev=>{const img=new Image(); img.onload=()=>{sprites[selName]=img; draw();}; img.src=ev.target.result;};
+  r.readAsDataURL(f); e.target.value='';
+};
+
+/* === save / load === */
+document.getElementById('btnSave').onclick=()=>{
+  const data={obj,txt,sprites:Object.fromEntries(Object.entries(sprites).filter(([k,i])=>i).map(([k,i])=>[k,i.src]))};
+  const blob=new Blob([JSON.stringify(data)],{type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='level.json'; a.click();
+};
+document.getElementById('btnLoad').onchange=e=>{
+  const f=e.target.files[0]; if(!f)return;
+  const r=new FileReader();
+  r.onload=ev=>{
+    try{
+      const d=JSON.parse(ev.target.result);
+      restoreSprites(d.sprites||{}); copyGrid(obj,d.obj); copyGrid(txt,d.txt);
+      snapshot(); draw();
+    }catch(_){alert('Invalid file');}
+  };
+  r.readAsText(f); e.target.value='';
+};
+function restoreSprites(map){for(const[k,src]of Object.entries(map)){const img=new Image();img.onload=()=>{sprites[k]=img;draw();};img.src=src;}}
+
+/* === placing / erasing === */
+cv.oncontextmenu=e=>e.preventDefault();
+cv.addEventListener('mousedown',e=>{
+  if(play)return;
+  snapshot();
+  const r=cv.getBoundingClientRect();
+  const x=Math.floor((e.clientX-r.left)/TILE), y=Math.floor((e.clientY-r.top)/TILE);
+  if(x<0||x>=W||y<0||y>=H)return;
+  if(e.button===2){obj[y][x]=txt[y][x]=null;}
+  else if(selType==='obj')obj[y][x]=selName; else txt[y][x]=selName;
+  draw();
+});
+
+/* --- NEW: extra flag --- */
+let pushKeyHeld = false;
+
+/* --- keyboard handler (replace existing one) --- */
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space') { togglePlay(); e.preventDefault(); }
+  if (!play && e.code === 'KeyZ' && undoStack.length) {
+    const p = JSON.parse(undoStack.pop());
+    copyGrid(obj, p.obj); copyGrid(txt, p.txt); draw();
+  }
+  if (play) {
+    const dir = {ArrowUp:[0,-1],KeyW:[0,-1],ArrowDown:[0,1],KeyS:[0,1],
+                 ArrowLeft:[-1,0],KeyA:[-1,0],ArrowRight:[1,0],KeyD:[1,0]}[e.code];
+    if (dir) move(dir[0], dir[1]);
+    if (e.code === 'KeyR') resetPlay();
+    if (e.code === 'KeyX') pushKeyHeld = true;          // start push-override
+  }
+});
+document.addEventListener('keyup', e => {
+  if (e.code === 'KeyX') pushKeyHeld = false;           // stop push-override
+});
+
+/* --- movement routine (replace existing move function) --- */
+function move(dx, dy) {
+  const next = JSON.parse(JSON.stringify(obj));
+  let won = false;
+
+  for (const who of you) {
+    for (let y = 0; y < H; y++)
+      for (let x = 0; x < W; x++) {
+        if (obj[y][x] !== who) continue;
+
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+
+        const ahead = obj[ny][nx];
+        const treatAsPush = push.includes(ahead) || pushKeyHeld;   // ← NEW
+
+        if (stop.includes(ahead) && !treatAsPush) continue;
+
+        if (treatAsPush && ahead) {                  // attempt to push target
+          const nnx = nx + dx, nny = ny + dy;
+          if (nnx < 0 || nnx >= W || nny < 0 || nny >= H || obj[nny][nnx]) continue;
+          next[nny][nnx] = ahead;
+        }
+
+        next[ny][nx] = who;
+        next[y][x]   = null;
+        if (win.includes(ahead)) won = true;
+      }
+  }
+  copyGrid(obj, next);
+  if (won) banner.style.opacity = 1;
+  draw();
+}
+
+
+/* === play-mode helpers === */
+function togglePlay(){play=!play; banner.style.opacity=0; if(play)parseRules(); draw();}
+function resetPlay(){togglePlay(); togglePlay();}
+function parseRules(){
+  const R={YOU:new Set(),WIN:new Set(),STOP:new Set(),PUSH:new Set(),HOT:new Set(),MELT:new Set(),OPEN:new Set(),SHUT:new Set(),DEFEAT:new Set(),SINK:new Set(),FLOAT:new Set()};
+  const add=(n,p)=>R[p]?.add(n);
+  for(let y=0;y<H;y++)for(let x=0;x<W-2;x++){const [a,b,c]=[txt[y][x],txt[y][x+1],txt[y][x+2]]; if(words.NOUN.includes(a)&&b==='IS'&&c)add(a,c);}
+  for(let x=0;x<W;x++)for(let y=0;y<H-2;y++){const [a,b,c]=[txt[y][x],txt[y+1][x],txt[y+2][x]]; if(words.NOUN.includes(a)&&b==='IS'&&c)add(a,c);}
+  you=[...R.YOU]; win=[...R.WIN]; stop=[...R.STOP]; push=[...R.PUSH];
+}
+function move(dx,dy){
+  const next=JSON.parse(JSON.stringify(obj)); let won=false;
+  for(const who of you)for(let y=0;y<H;y++)for(let x=0;x<W;x++)if(obj[y][x]===who){
+    const nx=x+dx,ny=y+dy; if(nx<0||ny<0||nx>=W||ny>=H)continue;
+    const ahead=obj[ny][nx]; if(stop.includes(ahead))continue;
+    if(push.includes(ahead)){const nnx=nx+dx,nny=ny+dy;
+      if(nnx<0||nny<0||nnx>=W||nny>=H||obj[nny][nnx])continue;
+      next[nny][nnx]=ahead;}
+    next[ny][nx]=who; next[y][x]=null;
+    if(win.includes(ahead))won=true;
+  }
+  copyGrid(obj,next); if(won)banner.style.opacity=1; draw();
+}
+
+/* === drawing === */
+function box(col,ch,x,y,p=0){ctx.fillStyle=col;ctx.fillRect(x*TILE+p,y*TILE+p,TILE-2*p,TILE-2*p);ctx.fillStyle='#000';ctx.fillText(ch,x*TILE+10,y*TILE+22);}
+function draw(){
+  ctx.clearRect(0,0,cv.width,cv.height);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    const n=obj[y][x]; if(n)(sprites[n]?ctx.drawImage(sprites[n],x*TILE,y*TILE,TILE,TILE):box('#08f',n[0],x,y));
+    const w=txt[y][x]; if(w)box('#ff0',w,x,y,4);
+  }
+  ctx.strokeStyle='#666';
+  for(let i=0;i<=W;i++){ctx.beginPath();ctx.moveTo(i*TILE,0);ctx.lineTo(i*TILE,H*TILE);ctx.stroke();}
+  for(let i=0;i<=H;i++){ctx.beginPath();ctx.moveTo(0,i*TILE);ctx.lineTo(W*TILE,i*TILE);ctx.stroke();}
+}
+function copyGrid(t,s){for(let y=0;y<H;y++)for(let x=0;x<W;x++)t[y][x]=s[y][x];}
+
+/* === first render === */ draw();
+</script>
+</body>
+</html>
