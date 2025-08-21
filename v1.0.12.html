@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>A CAT IS CAT BUT THE DOG IS MOUSE – Level Maker</title>
+<style>
+  body{margin:0;background:#222;color:#eee;font-family:Arial,Helvetica,sans-serif}
+  #header{text-align:center;padding:8px 0;font-weight:700}
+  #container{display:flex;justify-content:center;max-width:960px;margin:auto}
+  #palette{width:160px;background:#333;padding:8px;height:600px;overflow-y:auto}
+  #palette h3{margin:4px 0;text-align:center;font-size:18px}
+  .item{cursor:pointer;background:#666;margin:3px 0;padding:6px;border-radius:4px;text-align:center;user-select:none}
+  .item:hover{background:#888}
+  .sel{background:#aaa!important;color:#000}
+  #uploadLbl{display:block;margin:6px 0;background:#555;padding:6px;border-radius:5px;text-align:center;cursor:pointer}
+  #up{display:none}
+  #canvasContainer{position:relative}
+  #canvasWrap{border:2px solid #666}
+  canvas{display:block;background:#444}
+  button{width:100%;margin:6px 0;padding:6px;background:#555;color:#eee;border:none;border-radius:5px;cursor:pointer}
+  button:hover{background:#666}
+  #banner{position:fixed;top:40%;left:0;width:100%;text-align:center;font-size:48px;color:#0f0;pointer-events:none;opacity:0;transition:opacity .3s}
+  #rulesDisplay{position:absolute;top:10px;left:10px;background:rgba(0,0,0,0.6);padding:8px;border-radius:5px;font-family:monospace;color:#fff;pointer-events:none;display:none;z-index:10}
+</style>
+</head>
+<body>
+<div id="header">
+  A CAT IS CAT BUT THE DOG IS MOUSE – Level Maker<br>
+  <small>Click place · Right-click erase · Space play · R reset · Z/U undo · Hold X to push</small>
+</div>
+
+<div id="container">
+  <div id="palette">
+    <h3>Objects</h3><div id="objList"></div>
+    <label id="uploadLbl" for="up">Upload Sprite</label><input id="up" type="file" accept="image/*">
+    <button id="btnSave">Save JSON</button>
+    <input  id="btnLoad" type="file" accept=".json">
+    <h3>Word Blocks</h3><div id="wordList"></div>
+  </div>
+
+  <div id="canvasContainer">
+    <div id="rulesDisplay"></div>
+    <div id="canvasWrap"><canvas id="cv" width="640" height="480"></canvas></div>
+  </div>
+</div>
+<div id="banner">YOU WIN!</div>
+
+<script>
+/* === constants & data === */
+const TILE=32, W=20, H=15;
+const objects=['CAT','DOG','MOUSE','WALL','ROCK','TREE','WATER','FIRE','LAVA','BUSH','FLAG','KEY','DOOR'];
+const words ={NOUN:[...objects],VERB:['IS'],PROP:['YOU','WIN','STOP','PUSH','HOT','MELT','OPEN','SHUT','DEFEAT','SINK','FLOAT']};
+const UNPUSHABLE_PROPS = ['DEFEAT', 'SINK', 'MELT', 'HOT', 'SHUT'];
+
+/* === DOM refs === */
+const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
+const objBox=document.getElementById('objList'), wordBox=document.getElementById('wordList');
+const banner=document.getElementById('banner'), rulesDisplay=document.getElementById('rulesDisplay');
+
+/* === editor state === */
+const sprites=Object.fromEntries(objects.map(o=>[o,null]));
+const obj = Array.from({length:H},()=>Array(W).fill(0).map(()=>[]));
+const txt = Array.from({length:H},()=>Array(W).fill(null));
+let selName='CAT', selType='obj', play=false, pushKeyHeld=false;
+let allRules = {};
+
+/* === undo stacks === */
+const editUndoStack=[];
+const playUndoStack=[];
+snapshot(editUndoStack);
+function snapshot(stack){stack.push(JSON.stringify({obj,txt})); if(stack.length>100)stack.shift();}
+
+/* === palette builders === */
+function addItem(name,type,parent){
+  const d=document.createElement('div');
+  d.className='item'; d.textContent=name;
+  d.onclick=()=>{selName=name; selType=type; markSel();};
+  parent.appendChild(d);
+}
+objects.forEach(o=>addItem(o,'obj',objBox));
+Object.values(words).flat().forEach(w=>addItem(w,'word',wordBox));
+function markSel(){document.querySelectorAll('.item').forEach(i=>i.classList.toggle('sel',i.textContent===selName));}
+markSel();
+
+/* === sprite upload === */
+document.getElementById('up').onchange=e=>{
+  const f=e.target.files[0]; if(!f)return;
+  if(selType!=='obj'){alert('Select an object first'); e.target.value=''; return;}
+  const r=new FileReader();
+  r.onload=ev=>{const img=new Image(); img.onload=()=>{sprites[selName]=img; draw();}; img.src=ev.target.result;};
+  r.readAsDataURL(f); e.target.value='';
+};
+
+/* === save / load === */
+document.getElementById('btnSave').onclick=()=>{
+  const data={obj,txt,sprites:Object.fromEntries(Object.entries(sprites).filter(([,i])=>i).map(([k,i])=>[k,i.src]))};
+  const blob=new Blob([JSON.stringify(data)],{type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='level.json'; a.click();
+};
+document.getElementById('btnLoad').onchange=e=>{
+  const f=e.target.files; if(!f)return;
+  const r=new FileReader();
+  r.onload=ev=>{ try{ const d=JSON.parse(ev.target.result); restoreSprites(d.sprites||{}); copyGrid(obj,d.obj); copyGrid(txt,d.txt); snapshot(editUndoStack); draw(); }catch(_){alert('Invalid file');} };
+  r.readAsText(f); e.target.value='';
+};
+function restoreSprites(map){for(const[k,src]of Object.entries(map)){const img=new Image();img.onload=()=>{sprites[k]=img;draw();};img.src=src;}}
+
+/* === placing / erasing === */
+cv.oncontextmenu=e=>e.preventDefault();
+cv.addEventListener('mousedown',e=>{
+  if(play)return;
+  snapshot(editUndoStack);
+  const r=cv.getBoundingClientRect();
+  const x=Math.floor((e.clientX-r.left)/TILE), y=Math.floor((e.clientY-r.top)/TILE);
+  if(x<0||x>=W||y<0||y>=H)return;
+  if(e.button===2){
+    if (obj[y][x].length > 0) obj[y][x].pop();
+    else txt[y][x]=null;
+  } else if(selType==='obj'){
+    obj[y][x].push(selName);
+  } else {
+    txt[y][x]=selName;
+  }
+  draw();
+});
+
+/* === keyboard handlers === */
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space') { togglePlay(); e.preventDefault(); }
+  
+  if (!play && e.code === 'KeyZ' && editUndoStack.length > 1) {
+    editUndoStack.pop(); // Pop current state
+    const prev = JSON.parse(editUndoStack[editUndoStack.length - 1]);
+    copyGrid(obj, prev.obj); copyGrid(txt, prev.txt); draw();
+  }
+  
+  if (play && e.code === 'KeyU' && playUndoStack.length > 1) {
+    playUndoStack.pop();
+    const prev = JSON.parse(playUndoStack[playUndoStack.length - 1]);
+    copyGrid(obj, prev.obj); copyGrid(txt, prev.txt); parseRules(); draw();
+  }
+
+  if (play) {
+    const dir = {ArrowUp:[0,-1],KeyW:[0,-1],ArrowDown:[0,1],KeyS:[0,1],ArrowLeft:[-1,0],KeyA:[-1,0],ArrowRight:[1,0],KeyD:[1,0]}[e.code];
+    if (dir) move(dir[0], dir[1]);
+    if (e.code === 'KeyR') resetPlay();
+    if (e.code === 'KeyX') pushKeyHeld = true;
+  }
+});
+document.addEventListener('keyup', e => {
+  if (e.code === 'KeyX') pushKeyHeld = false;
+});
+
+/* === play-mode helpers === */
+let initialGridState = '';
+function togglePlay(){
+  play=!play;
+  if(play) {
+    initialGridState = JSON.stringify({obj, txt});
+    playUndoStack.length = 0;
+    snapshot(playUndoStack);
+    parseRules();
+  }
+  rulesDisplay.style.display=play?'block':'none';
+  banner.style.opacity=0;
+  draw();
+}
+function resetPlay(){
+  if(!play) return;
+  const initial = JSON.parse(initialGridState);
+  copyGrid(obj, initial.obj);
+  copyGrid(txt, initial.txt);
+  playUndoStack.length = 0;
+  snapshot(playUndoStack);
+  parseRules();
+  draw();
+}
+
+function parseRules(){
+  allRules = {YOU:new Set(),WIN:new Set(),STOP:new Set(),PUSH:new Set(),HOT:new Set(),MELT:new Set(),OPEN:new Set(),SHUT:new Set(),DEFEAT:new Set(),SINK:new Set(),FLOAT:new Set()};
+  const add=(n,p)=>allRules[p]?.add(n);
+  for(let y=0;y<H;y++)for(let x=0;x<W-2;x++){const [a,b,c]=[txt[y][x],txt[y][x+1],txt[y][x+2]]; if(words.NOUN.includes(a)&&b==='IS'&&c)add(a,c);}
+  for(let x=0;x<W;x++)for(let y=0;y<H-2;y++){const [a,b,c]=[txt[y][x],txt[y+1][x],txt[y+2][x]]; if(words.NOUN.includes(a)&&b==='IS'&&c)add(a,c);}
+  
+  let rulesText = [];
+  for(const [prop, nouns] of Object.entries(allRules)) {
+    if (nouns.size > 0) {
+      nouns.forEach(noun => rulesText.push(`${noun} IS ${prop}`));
+    }
+  }
+  rulesDisplay.innerHTML = rulesText.join('<br>') || 'No active rules';
+}
+
+function processInteractions() {
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    let objectsOnTile = obj[y][x];
+    if (objectsOnTile.length < 1) continue;
+
+    const hasSink = objectsOnTile.some(o => allRules.SINK.has(o));
+    if(hasSink) objectsOnTile = objectsOnTile.filter(o => allRules.FLOAT.has(o) || allRules.SINK.has(o));
+    
+    const hasHot = objectsOnTile.some(o => allRules.HOT.has(o));
+    if(hasHot) objectsOnTile = objectsOnTile.filter(o => !allRules.MELT.has(o));
+
+    const hasOpen = objectsOnTile.some(o => allRules.OPEN.has(o));
+    if(hasOpen) objectsOnTile = objectsOnTile.filter(o => !allRules.SHUT.has(o));
+
+    const hasDefeat = objectsOnTile.some(o => allRules.DEFEAT.has(o));
+    if(hasDefeat) objectsOnTile = objectsOnTile.filter(o => !allRules.YOU.has(o));
+
+    obj[y][x] = objectsOnTile;
+  }
+}
+
+function move(dx, dy) {
+  snapshot(playUndoStack);
+  const movedObjects = new Set();
+  for (const who of allRules.YOU) {
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      if (!obj[y][x].includes(who) || movedObjects.has(who)) continue;
+      
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+
+      const objectsAhead = obj[ny][nx];
+      if (objectsAhead.some(o => allRules.STOP.has(o))) continue;
+
+      let pushableAhead = [];
+      let unpushableBlocking = false;
+      for (const ahead of objectsAhead) {
+        const isUnpushable = UNPUSHABLE_PROPS.some(prop => allRules[prop] && allRules[prop].has(ahead));
+        if (allRules.PUSH.has(ahead) || (pushKeyHeld && !isUnpushable)) {
+          pushableAhead.push(ahead);
+        } else if (objectsAhead.length > 0 && !allRules.PUSH.has(ahead)) {
+           unpushableBlocking = true;
+        }
+      }
+      if(unpushableBlocking) continue;
+
+      const nnx = nx + dx, nny = ny + dy;
+      if (pushableAhead.length > 0) {
+        if (nnx < 0 || nnx >= W || nny < 0 || nny >= H || obj[nny][nny].length > 0) continue;
+        obj[nny][nny].push(...pushableAhead);
+        obj[ny][nx] = obj[ny][nx].filter(o => !pushableAhead.includes(o));
+      }
+
+      obj[ny][nx].push(who);
+      obj[y][x] = obj[y][x].filter(o => o !== who);
+      movedObjects.add(who);
+    }
+  }
+
+  processInteractions();
+  parseRules();
+
+  const isWin = obj.flat().some(tile => tile.some(o => allRules.WIN.has(o)) && tile.some(o => allRules.YOU.has(o)));
+  if (isWin) banner.style.opacity = 1;
+
+  draw();
+}
+
+/* === drawing & utils === */
+function box(col,ch,x,y,p=0){ctx.fillStyle=col;ctx.fillRect(x*TILE+p,y*TILE+p,TILE-2*p,TILE-2*p);ctx.fillStyle='#000';ctx.fillText(ch,x*TILE+10,y*TILE+22);}
+function draw(){
+  ctx.clearRect(0,0,cv.width,cv.height);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    obj[y][x].forEach(n => {
+      if(sprites[n]) ctx.drawImage(sprites[n],x*TILE,y*TILE,TILE,TILE);
+      else box('#08f',n[0],x,y);
+    });
+    const w=txt[y][x]; if(w)box('#ff0',w,x,y,4);
+  }
+  ctx.strokeStyle='#666';
+  for(let i=0;i<=W;i++){ctx.beginPath();ctx.moveTo(i*TILE,0);ctx.lineTo(i*TILE,H*TILE);ctx.stroke();}
+  for(let i=0;i<=H;i++){ctx.beginPath();ctx.moveTo(0,i*TILE);ctx.lineTo(W*TILE,i*TILE);ctx.stroke();}
+}
+function copyGrid(t,s){for(let y=0;y<H;y++)for(let x=0;x<W;x++)t[y][x]=s?.[y]?.[x] || [];}
+
+/* === first render === */ draw();
+</script>
+</body>
+</html>
