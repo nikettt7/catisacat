@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>QUERY OF RULE CHANGE – CAT IS CAT BUT THE DOG IS MOUSE</title>
+<style>
+  body{margin:0;background:#222;color:#eee;font-family:Arial,Helvetica,sans-serif}
+  #header{text-align:center;padding:8px 0;font-weight:700}
+  #container{display:flex;justify-content:center;max-width:960px;margin:auto}
+  #palette{width:160px;background:#333;padding:8px;height:600px;overflow-y:auto}
+  #palette h3{margin:4px 0;text-align:center;font-size:18px}
+  .item{cursor:pointer;background:#666;margin:3px 0;padding:6px;border-radius:4px;text-align:center;user-select:none}
+  .item:hover{background:#888}
+  .sel{background:#aaa!important;color:#000}
+  #uploadLbl{display:block;margin:6px 0;background:#555;padding:6px;border-radius:5px;text-align:center;cursor:pointer}
+  #up{display:none}
+  #canvasContainer{position:relative}
+  #canvasWrap{border:2px solid #666}
+  canvas{display:block;background:#444}
+  button{width:100%;margin:6px 0;padding:6px;background:#555;color:#eee;border:none;border-radius:5px;cursor:pointer}
+  button:hover{background:#666}
+  #banner{position:fixed;top:40%;left:0;width:100%;text-align:center;font-size:48px;color:#0f0;pointer-events:none;opacity:0;transition:opacity .3s}
+  #rulesDisplay{position:absolute;top:10px;left:10px;background:rgba(0,0,0,0.6);padding:8px;border-radius:5px;font-family:monospace;color:#fff;pointer-events:none;display:none;z-index:10}
+</style>
+</head>
+<body>
+<div id="header">
+  QUERY OF RULE CHANGE – CAT IS CAT BUT THE DOG IS MOUSE<br>
+  <small>Click place · Right-click erase · Space play · R reset · Z/U undo</small>
+</div>
+<div id="container">
+  <div id="palette">
+    <h3>Objects</h3><div id="objList"></div>
+    <label id="uploadLbl" for="up">Upload Sprite</label><input id="up" type="file" accept="image/*">
+    <button id="btnSave">Save JSON</button>
+    <input  id="btnLoad" type="file" accept=".json">
+    <h3>Word Blocks</h3><div id="wordList"></div>
+  </div>
+  <div id="canvasContainer">
+    <div id="rulesDisplay"></div>
+    <div id="canvasWrap"><canvas id="cv" width="640" height="480"></canvas></div>
+  </div>
+</div>
+<div id="banner">YOU WIN!</div>
+<script>
+const TILE=32, W=20, H=15;
+const objects=['CAT','DOG','MOUSE','WALL','ROCK','TREE','WATER','FIRE','LAVA','BUSH','FLAG','KEY','DOOR'];
+const words={NOUN:[...objects],VERB:['IS'],PROP:['YOU','WIN','STOP','PUSH','HOT','MELT','OPEN','SHUT','DEFEAT','SINK','FLOAT','PASS']};
+const DEFAULT_PROPERTIES = {
+  'WALL':['STOP'], 'ROCK':['PUSH'], 'TREE':['STOP'], 'WATER':['SINK'], 'FIRE':['HOT','DEFEAT'], 'LAVA':['HOT','DEFEAT','SINK'],
+  'BUSH':['PUSH'], 'KEY':['PUSH'], 'DOOR':['SHUT','STOP']
+};
+const sprites=Object.fromEntries(objects.map(o=>[o,null]));
+const obj = Array.from({length:H},()=>Array(W).fill(0).map(()=>[]));
+const txt = Array.from({length:H},()=>Array(W).fill(null));
+let selName='CAT', selType='obj', play=false;
+let allRules = {};
+const editUndoStack=[]; const playUndoStack=[];
+snapshot(editUndoStack);
+function snapshot(stack){stack.push(JSON.stringify({obj,txt})); if(stack.length>100)stack.shift();}
+function hasProp(o,p){return allRules[p]?.has(o);}
+function addItem(name,type,parent){const d=document.createElement('div');d.className='item';d.textContent=name;d.onclick=()=>{selName=name; selType=type; markSel();};parent.appendChild(d);}
+objects.forEach(o=>addItem(o,'obj',objBox=document.getElementById('objList')));
+Object.values(words).flat().forEach(w=>addItem(w,'word',wordBox=document.getElementById('wordList')));
+function markSel(){document.querySelectorAll('.item').forEach(i=>i.classList.toggle('sel',i.textContent===selName));} markSel();
+
+document.getElementById('up').onchange=e=>{
+  const f=e.target.files[0]; if(!f)return;
+  if(selType!=='obj'){alert('Select an object first'); e.target.value=''; return;}
+  const r=new FileReader();
+  r.onload=ev=>{const img=new Image(); img.onload=()=>{sprites[selName]=img; draw();}; img.src=ev.target.result;};
+  r.readAsDataURL(f); e.target.value='';
+};
+document.getElementById('btnSave').onclick=()=>{
+  const data={obj,txt,sprites:Object.fromEntries(Object.entries(sprites).filter(([,i])=>i).map(([k,i])=>[k,i.src]))};
+  const blob=new Blob([JSON.stringify(data)],{type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='level.json'; a.click();
+};
+document.getElementById('btnLoad').onchange=e=>{
+  const f=e.target.files; if(!f)return;
+  const r=new FileReader();
+  r.onload=ev=>{ try{ const d=JSON.parse(ev.target.result); restoreSprites(d.sprites||{}); copyGrid(obj,d.obj); copyGrid(txt,d.txt); snapshot(editUndoStack); draw(); }catch(_){alert('Invalid file');} };
+  r.readAsText(f); e.target.value='';
+};
+function restoreSprites(map){for(const[k,src]of Object.entries(map)){const img=new Image();img.onload=()=>{sprites[k]=img;draw();};img.src=src;}}
+
+cv.oncontextmenu=e=>e.preventDefault();
+cv.addEventListener('mousedown',e=>{
+  if(play)return;
+  snapshot(editUndoStack);
+  const r=cv.getBoundingClientRect();
+  const x=Math.floor((e.clientX-r.left)/TILE), y=Math.floor((e.clientY-r.top)/TILE);
+  if(x<0||x>=W||y<0||y>=H)return;
+  if(e.button===2){
+    if (obj[y][x].length > 0) obj[y][x].pop();
+    else txt[y][x]=null;
+  } else if(selType==='obj'){
+    obj[y][x].push(selName);
+  } else {
+    txt[y][x]=selName;
+  }
+  draw();
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space') { togglePlay(); e.preventDefault(); }
+  if (!play && e.code === 'KeyZ' && editUndoStack.length > 1) {
+    editUndoStack.pop(); const prev = JSON.parse(editUndoStack[editUndoStack.length-1]);
+    copyGrid(obj, prev.obj); copyGrid(txt, prev.txt); draw();
+  }
+  if (play && e.code === 'KeyU' && playUndoStack.length > 1) {
+    playUndoStack.pop(); const prev = JSON.parse(playUndoStack[playUndoStack.length-1]);
+    copyGrid(obj, prev.obj); copyGrid(txt, prev.txt); parseRules(); draw();
+  }
+  if (play) {
+    const dir = {ArrowUp:[0,-1],KeyW:[0,-1],ArrowDown:[0,1],KeyS:[0,1],ArrowLeft:[-1,0],KeyA:[-1,0],ArrowRight:[1,0],KeyD:[1,0]}[e.code];
+    if (dir) move(dir[0], dir[1]);
+    if (e.code === 'KeyR') resetPlay();
+  }
+});
+let initialGridState = '';
+function togglePlay(){
+  play=!play;
+  if(play) { initialGridState = JSON.stringify({obj, txt}); playUndoStack.length = 0; snapshot(playUndoStack); parseRules();}
+  rulesDisplay=document.getElementById('rulesDisplay'); rulesDisplay.style.display=play?'block':'none'; banner.style.opacity=0; draw();
+}
+function resetPlay(){
+  if(!play) return;
+  const initial = JSON.parse(initialGridState);
+  copyGrid(obj, initial.obj); copyGrid(txt, initial.txt);
+  playUndoStack.length = 0; snapshot(playUndoStack);
+  parseRules(); draw();
+}
+function parseRules(){
+  allRules = {};
+  words.PROP.forEach(p => allRules[p] = new Set());
+  // 1. Defaults
+  for(const [objectName, props] of Object.entries(DEFAULT_PROPERTIES)) props.forEach(p=>allRules[p].add(objectName));
+  // 2. Grid rules
+  const add=(n,p)=>allRules[p]?.add(n);
+  for(let y=0;y<H;y++)for(let x=0;x<W-2;x++){const [a,b,c]=[txt[y][x],txt[y][x+1],txt[y][x+2]]; if(words.NOUN.includes(a)&&b==='IS'&&c)add(a,c);}
+  for(let x=0;x<W;x++)for(let y=0;y<H-2;y++){const [a,b,c]=[txt[y][x],txt[y+1][x],txt[y+2][x]]; if(words.NOUN.includes(a)&&b==='IS'&&c)add(a,c);}
+  let rulesText = [];
+  for(const [prop, nouns] of Object.entries(allRules)) if(nouns.size>0) nouns.forEach(noun=>rulesText.push(`${noun} IS ${prop}`));
+  document.getElementById('rulesDisplay').innerHTML = rulesText.sort().join('<br>') || 'No active rules';
+}
+function allProps(o){ return Object.fromEntries(words.PROP.map(p=>[p,hasProp(o,p)])); }
+function processInteractions() {
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    let onTile = obj[y][x];
+    // SINK: both are destroyed unless one is FLOAT, in which case SINK alone is destroyed
+    if (onTile.some(o=>hasProp(o,'SINK'))) {
+      if (onTile.some(o=>hasProp(o,'FLOAT'))) obj[y][x] = onTile.filter(o=>hasProp(o,'FLOAT')||hasProp(o,'SINK'));
+      else obj[y][x] = [];
+      continue;
+    }
+    // DEFEAT: if YOU and DEFEAT present, both are destroyed
+    if (onTile.some(o=>hasProp(o,'DEFEAT')) && onTile.some(o=>hasProp(o,'YOU'))) {
+      obj[y][x] = onTile.filter(o=>!hasProp(o,'DEFEAT') && !hasProp(o,'YOU'));
+      continue;
+    }
+    // HOT/MELT: HOT destroys MELT
+    if (onTile.some(o=>hasProp(o,'HOT')) && onTile.some(o=>hasProp(o,'MELT'))) {
+      obj[y][x] = onTile.filter(o=>!hasProp(o,'MELT'));
+      continue;
+    }
+    // OPEN/SHUT: OPEN destroys SHUT
+    if (onTile.some(o=>hasProp(o,'OPEN')) && onTile.some(o=>hasProp(o,'SHUT'))) {
+      obj[y][x] = onTile.filter(o=>!hasProp(o,'SHUT'));
+      continue;
+    }
+    // WIN: if YOU and WIN present, win triggers (handled after move)
+  }
+}
+function canStep(player, tileObjects) {
+  // If player has PASS, may walk through STOP/tileObjects but cannot interact.
+  if (hasProp(player, 'PASS') && tileObjects.some(o=>hasProp(o,'STOP'))) return 'pass';
+  // Else, STOP blocks, PUSH allows movement but you have to push chain, else regular step.
+  if (tileObjects.some(o=>hasProp(o,'STOP'))) return false;
+  return 'normal';
+}
+function move(dx, dy) {
+  snapshot(playUndoStack);
+  const gridCopy = JSON.stringify(obj); // for undo
+  let tempObj = JSON.parse(gridCopy);
+  const movedObjects = new Set();
+
+  for (const who of allRules.YOU) {
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      if (!obj[y][x].includes(who) || movedObjects.has(`${who}:${x},${y}`)) continue;
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+
+      let ahead = obj[ny][nx].slice();
+      const stepType = canStep(who, ahead);
+
+      if (stepType === 'pass') {
+        // Pass: move through anyway, no effect, stop after first tile not STOP
+        let fx = nx, fy = ny;
+        while (fx >= 0 && fx < W && fy >= 0 && fy < H && obj[fy][fx].some(o=>hasProp(o,'STOP'))) {
+          fx += dx; fy += dy;
+        }
+        if (fx < 0 || fx >= W || fy < 0 || fy >= H) continue;
+        obj[fy][fx].push(who);
+        obj[y][x] = obj[y][x].filter(o=>o!==who);
+        continue;
+      }
+      if (stepType === false) continue;
+
+      // PUSH logic
+      let canPushChain = true;
+      let checkX = nx, checkY = ny, chain = [];
+      while(true){
+        const t = (checkY >=0 && checkY < H && checkX >=0 && checkX < W) ? obj[checkY][checkX] : null;
+        if (t && t.length>0 && t.every(o=>hasProp(o,'PUSH'))) {
+          chain.push([checkX,checkY]);
+          checkX += dx; checkY += dy;
+        } else break;
+      }
+      // Is there room at the end?
+      if(chain.length){
+        const [lastX,lastY] = chain[chain.length-1];
+        const endX = lastX+dx, endY = lastY+dy;
+        if (endX < 0 || endX >= W || endY < 0 || endY >= H) continue;
+        if(obj[endY][endX].length>0) continue; // Can't push!
+        // Push all in chain
+        for(let n=chain.length-1; n>=0; n--){
+          const [cx,cy] = chain[n];
+          obj[cy+dx][cx+dy].push(...obj[cy][cx]);
+          obj[cy][cx]=[];
+        }
+      }
+      // Only proceed if first tile is now free or PUSH could be pushed away
+      if(obj[ny][nx].length>0 && !obj[ny][nx].every(o=>hasProp(o,'PUSH'))) continue;
+      obj[ny][nx].push(who);
+      obj[y][x] = obj[y][x].filter(o=>o!==who);
+      movedObjects.add(`${who}:${nx},${ny}`);
+    }
+  }
+  processInteractions();
+  parseRules();
+  // WIN check: if any tile has both YOU and WIN, show win
+  const isWin = obj.flat().some(tile => tile.some(o => hasProp(o, 'WIN')) && tile.some(o => hasProp(o, 'YOU')));
+  if (isWin) banner.style.opacity = 1;
+  draw();
+}
+/* ----------- Drawing ------------ */
+function box(col,ch,x,y,p=0){ctx.fillStyle=col;ctx.fillRect(x*TILE+p,y*TILE+p,TILE-2*p,TILE-2*p);ctx.fillStyle='#000';ctx.fillText(ch,x*TILE+10,y*TILE+22);}
+function draw(){
+  ctx.clearRect(0,0,cv.width,cv.height);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    obj[y][x].forEach(n => {if(sprites[n]) ctx.drawImage(sprites[n],x*TILE,y*TILE,TILE,TILE); else box('#08f',n[0],x,y);});
+    const w=txt[y][x]; if(w)box('#ff0',w,x,y,4);
+  }
+  ctx.strokeStyle='#666';
+  for(let i=0;i<=W;i++){ctx.beginPath();ctx.moveTo(i*TILE,0);ctx.lineTo(i*TILE,H*TILE);ctx.stroke();}
+  for(let i=0;i<=H;i++){ctx.beginPath();ctx.moveTo(0,i*TILE);ctx.lineTo(W*TILE,i*TILE);ctx.stroke();}
+}
+function copyGrid(t,s){for(let y=0;y<H;y++)for(let x=0;x<W;x++)t[y][x]=s?.[y]?.[x] || [];}
+draw();
+</script>
+</body>
+</html>
