@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A Cat is Cat but the Dog is Mouse</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #000;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            border: 1px solid #fff;
+        }
+        #menu {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background-color: rgba(0, 0, 0, 0.8);
+            color: #fff;
+            z-index: 10;
+        }
+        #menu h1 {
+            font-size: 2em;
+            margin-bottom: 1em;
+        }
+        #menu button {
+            margin: 0.5em;
+            padding: 0.5em 1em;
+            font-size: 1.2em;
+            cursor: pointer;
+        }
+        #game-complete {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: rgba(0, 0, 0, 0.8);
+            color: #fff;
+            font-size: 2em;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="1024" height="1024"></canvas> <!-- 32x32 grid * 32px tiles -->
+    <div id="menu" style="display: none;">
+        <h1>A Cat is Cat but the Dog is Mouse</h1>
+        <!-- Level buttons will be added dynamically -->
+    </div>
+    <div id="game-complete" style="display: none;">
+        A Cat is Cat but the Dog is Mouse - Complete!
+    </div>
+    <script>
+        // utils.js content inline
+
+        // Helper functions for grid manipulation, collision detection, and asset loading.
+
+        function deepCopy(obj) {
+            return JSON.parse(JSON.stringify(obj));
+        }
+
+        function loadImage(path) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.src = path;
+                img.onload = () => resolve(img);
+                img.onerror = reject;
+            });
+        }
+
+        function getObjectsAtPosition(objects, x, y) {
+            return objects.filter(obj => obj.x === x && obj.y === y);
+        }
+
+        function canMoveTo(objects, x, y, direction, rules, movingObj) {
+            const targets = getObjectsAtPosition(objects, x, y);
+            for (let target of targets) {
+                if (hasProperty(target.type, 'Stop', rules) && !hasProperty(movingObj.type, 'Push', rules)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        function pushObjects(objects, x, y, direction, rules, movingObj) {
+            const targets = getObjectsAtPosition(objects, x, y).filter(obj => hasProperty(obj.type, 'Push', rules));
+            if (targets.length === 0) return true;
+
+            const dx = direction === 'right' ? 1 : direction === 'left' ? -1 : 0;
+            const dy = direction === 'down' ? 1 : direction === 'up' ? -1 : 0;
+            const newX = x + dx;
+            const newY = y + dy;
+
+            if (!canMoveTo(objects, newX, newY, direction, rules, movingObj)) return false;
+
+            for (let target of targets) {
+                if (!pushObjects(objects, newX, newY, direction, rules, target)) return false;
+                target.x = newX;
+                target.y = newY;
+            }
+            return true;
+        }
+
+        // game.js content inline
+
+        // Core game logic
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const TILE_SIZE = 32;
+        const GRID_WIDTH = 32;
+        const GRID_HEIGHT = 32;
+
+        // Sprite mapping with TODO comments for user to set paths
+        const sprites = {
+            Cat: null, // TODO: Set path to Cat sprite (e.g., 'assets/sprites/cat.png')
+            Dog: null, // TODO: Set path to Dog sprite (e.g., 'assets/sprites/dog.png')
+            Mouse: null, // TODO: Set path to Mouse sprite (e.g., 'assets/sprites/mouse.png')
+            Wall: null, // TODO: Set path to Wall sprite (e.g., 'assets/sprites/wall.png')
+            Text_Cat: null, // TODO: Set path to Text_Cat sprite (e.g., 'assets/sprites/text_cat.png')
+            Text_Dog: null, // TODO: Set path to Text_Dog sprite (e.g., 'assets/sprites/text_dog.png')
+            Text_Mouse: null, // TODO: Set path to Text_Mouse sprite (e.g., 'assets/sprites/text_mouse.png')
+            Text_Wall: null, // TODO: Set path to Text_Wall sprite (e.g., 'assets/sprites/text_wall.png')
+            Text_Is: null, // TODO: Set path to Text_Is sprite (e.g., 'assets/sprites/text_is.png')
+            Text_You: null, // TODO: Set path to Text_You sprite (e.g., 'assets/sprites/text_you.png')
+            Text_Win: null, // TODO: Set path to Text_Win sprite (e.g., 'assets/sprites/text_win.png')
+            Text_Push: null, // TODO: Set path to Text_Push sprite (e.g., 'assets/sprites/text_push.png')
+            Text_Stop: null, // TODO: Set path to Text_Stop sprite (e.g., 'assets/sprites/text_stop.png')
+            Text_Defeat: null // TODO: Set path to Text_Defeat sprite (e.g., 'assets/sprites/text_defeat.png')
+            // Add more as needed for other objects and text blocks
+        };
+
+        // Background image with TODO comment
+        let backgroundImage = null; // TODO: Set path to background (e.g., 'assets/background.png')
+
+        // UI assets with TODO comments
+        const uiAssets = {
+            levelButton: null, // TODO: Set path to level selection button (e.g., 'assets/ui/button.png')
+            gameComplete: null // TODO: Set path to Game Complete screen (e.g., 'assets/ui/game_complete.png')
+        };
+
+        // Placeholder sprite (colored square) for missing images
+        function drawPlaceholder(x, y, color = '#ff00ff') {
+            ctx.fillStyle = color;
+            ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+        }
+
+        let currentLevel = 1;
+        let gameState = {
+            objects: [],
+            rules: new Map(),
+            undoStack: []
+        };
+
+        const menuDiv = document.getElementById('menu');
+        const gameCompleteDiv = document.getElementById('game-complete');
+
+        async function loadAssets() {
+            // Load sprites
+            for (let key in sprites) {
+                if (sprites[key]) {
+                    try {
+                        sprites[key] = await loadImage(sprites[key]);
+                    } catch (e) {
+                        console.error(`Failed to load sprite for ${key}: ${e}`);
+                        sprites[key] = null;
+                    }
+                }
+            }
+            // Load background
+            if (backgroundImage) {
+                try {
+                    backgroundImage = await loadImage(backgroundImage);
+                } catch (e) {
+                    console.error(`Failed to load background: ${e}`);
+                    backgroundImage = null;
+                }
+            }
+            // Load UI assets (optional, since UI is text-based)
+            for (let key in uiAssets) {
+                if (uiAssets[key]) {
+                    try {
+                        uiAssets[key] = await loadImage(uiAssets[key]);
+                    } catch (e) {
+                        console.error(`Failed to load UI asset for ${key}: ${e}`);
+                        uiAssets[key] = null;
+                    }
+                }
+            }
+        }
+
+        async function loadLevel(level) {
+            try {
+                const response = await fetch(`level${level}.json`);
+                if (!response.ok) throw new Error('Failed to load level');
+                const data = await response.json();
+                if (data.width !== 32 || data.height !== 32) {
+                    throw new Error('Invalid grid size');
+                }
+                gameState.objects = data.objects.map(obj => ({ ...obj }));
+                gameState.undoStack = [];
+                updateRules();
+                render();
+            } catch (e) {
+                console.error(`Error loading level ${level}: ${e}`);
+                alert('Error loading level. Check console for details.');
+            }
+        }
+
+        function showMenu() {
+            menuDiv.innerHTML = '<h1>A Cat is Cat but the Dog is Mouse</h1>';
+            for (let i = 1; i <= 10; i++) {
+                const btn = document.createElement('button');
+                btn.textContent = `Level ${i}`;
+                btn.onclick = () => {
+                    currentLevel = i;
+                    loadLevel(i);
+                    menuDiv.style.display = 'none';
+                };
+                menuDiv.appendChild(btn);
+            }
+            menuDiv.style.display = 'flex';
+        }
+
+        function showGameComplete() {
+            gameCompleteDiv.style.display = 'flex';
+            setTimeout(() => {
+                gameCompleteDiv.style.display = 'none';
+                showMenu();
+            }, 3000); // Auto-return to menu after 3 seconds
+        }
+
+        function updateRules() {
+            gameState.rules = new Map();
+            // Scan grid for rules horizontally and vertically
+            for (let y = 0; y < GRID_HEIGHT; y++) {
+                for (let x = 0; x < GRID_WIDTH; x++) {
+                    parseRuleAt(x, y, 'horizontal');
+                    parseRuleAt(x, y, 'vertical');
+                }
+            }
+        }
+
+        function parseRuleAt(x, y, direction) {
+            // Simple rule parser for [NOUN] [IS] [PROPERTY]
+            const dx = direction === 'horizontal' ? 1 : 0;
+            const dy = direction === 'horizontal' ? 0 : 1;
+
+            const obj1 = getObjectsAtPosition(gameState.objects, x, y).find(isTextNoun);
+            if (!obj1) return;
+            const obj2 = getObjectsAtPosition(gameState.objects, x + dx, y + dy).find(isTextIs);
+            if (!obj2) return;
+            const obj3 = getObjectsAtPosition(gameState.objects, x + 2*dx, y + 2*dy).find(isTextProperty);
+            if (!obj3) return;
+
+            const noun = obj1.type.replace('Text_', '');
+            const property = obj3.type.replace('Text_', '');
+            if (!gameState.rules.has(noun)) gameState.rules.set(noun, new Set());
+            gameState.rules.get(noun).add(property);
+        }
+
+        function isTextNoun(obj) {
+            return obj.type.startsWith('Text_') && !obj.type.includes('Is') && !isProperty(obj.type.replace('Text_', ''));
+        }
+
+        function isTextIs(obj) {
+            return obj.type === 'Text_Is';
+        }
+
+        function isTextProperty(obj) {
+            return obj.type.startsWith('Text_') && isProperty(obj.type.replace('Text_', ''));
+        }
+
+        function isProperty(prop) {
+            return ['You', 'Win', 'Push', 'Stop', 'Defeat'].includes(prop);
+        }
+
+        function hasProperty(type, prop, rules = gameState.rules) {
+            return rules.has(type) && rules.get(type).has(prop);
+        }
+
+        function getPlayerObjects() {
+            return gameState.objects.filter(obj => hasProperty(obj.type, 'You'));
+        }
+
+        function checkWin() {
+            const players = getPlayerObjects();
+            for (let player of players) {
+                const atPos = getObjectsAtPosition(gameState.objects, player.x, player.y);
+                if (atPos.some(obj => hasProperty(obj.type, 'Win'))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function checkDefeat() {
+            const players = getPlayerObjects();
+            for (let player of players) {
+                const atPos = getObjectsAtPosition(gameState.objects, player.x, player.y);
+                if (atPos.some(obj => hasProperty(obj.type, 'Defeat') && obj !== player)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function move(direction) {
+            const players = getPlayerObjects();
+            if (players.length === 0) return; // Soft-lock
+
+            // Save state for undo
+            if (gameState.undoStack.length >= 10) gameState.undoStack.shift();
+            gameState.undoStack.push(deepCopy(gameState.objects));
+
+            for (let player of players) {
+                const dx = direction === 'right' ? 1 : direction === 'left' ? -1 : 0;
+                const dy = direction === 'down' ? 1 : direction === 'up' ? -1 : 0;
+                const newX = player.x + dx;
+                const newY = player.y + dy;
+
+                if (newX < 0 || newX >= GRID_WIDTH || newY < 0 || newY >= GRID_HEIGHT) continue;
+
+                const targets = getObjectsAtPosition(gameState.objects, newX, newY);
+
+                let canMove = true;
+                for (let target of targets) {
+                    if (hasProperty(target.type, 'Stop')) {
+                        canMove = false;
+                        break;
+                    }
+                }
+
+                if (canMove && targets.some(t => hasProperty(t.type, 'Push'))) {
+                    canMove = pushObjects(gameState.objects, newX, newY, direction, gameState.rules, player);
+                }
+
+                if (canMove) {
+                    player.x = newX;
+                    player.y = newY;
+                }
+            }
+
+            updateRules();
+            render();
+
+            if (checkDefeat()) {
+                restartLevel();
+            } else if (checkWin()) {
+                currentLevel++;
+                if (currentLevel > 10) {
+                    showGameComplete();
+                } else {
+                    loadLevel(currentLevel);
+                }
+            }
+        }
+
+        function undo() {
+            if (gameState.undoStack.length > 0) {
+                gameState.objects = gameState.undoStack.pop();
+                updateRules();
+                render();
+            }
+        }
+
+        function restartLevel() {
+            loadLevel(currentLevel);
+        }
+
+        function render() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw background
+            if (backgroundImage) {
+                ctx.drawImage(backgroundImage, 0, 0, canvas.width, canvas.height);
+            } else {
+                ctx.fillStyle = '#222';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+
+            // Draw objects
+            for (let obj of gameState.objects) {
+                const sprite = sprites[obj.type];
+                if (sprite) {
+                    ctx.drawImage(sprite, obj.x * TILE_SIZE, obj.y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+                } else {
+                    drawPlaceholder(obj.x, obj.y);
+                }
+            }
+        }
+
+        // Input handling
+        document.addEventListener('keydown', (e) => {
+            if (menuDiv.style.display !== 'none' || gameCompleteDiv.style.display !== 'none') return;
+
+            switch (e.key.toLowerCase()) {
+                case 'arrowup':
+                case 'w':
+                    move('up');
+                    break;
+                case 'arrowdown':
+                case 's':
+                    move('down');
+                    break;
+                case 'arrowleft':
+                case 'a':
+                    move('left');
+                    break;
+                case 'arrowright':
+                case 'd':
+                    move('right');
+                    break;
+                case 'r':
+                    restartLevel();
+                    break;
+                case 'z':
+                    undo();
+                    break;
+                case 'm':
+                    showMenu();
+                    break;
+            }
+        });
+
+        // Initialization
+        async function init() {
+            await loadAssets();
+            showMenu();
+        }
+
+        init();
+
+        // Brief guide (as comment)
+        /*
+        How to Play:
+        - Use arrow keys or WASD to move the player-controlled object (e.g., Cat if "Cat is You").
+        - Push text blocks to change rules, e.g., form "Dog is You" to control Dog.
+        - Touch a "Win" object with a "You" object to complete the level.
+        - Avoid "Defeat" objects.
+        - 'R' to restart, 'Z' to undo, 'M' to menu.
+
+        Adding Assets:
+        - Set sprite paths in the sprites object (e.g., sprites.Cat = 'path/to/cat.png';)
+        - Set backgroundImage = 'path/to/background.png';
+        - Create level1.json to level10.json files in the same directory with the specified format.
+        - Run in a browser; ensure files are served correctly if using local server for fetch.
+        */
+    </script>
+</body>
+</html>
